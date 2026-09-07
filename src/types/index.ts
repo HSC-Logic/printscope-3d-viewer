@@ -1,4 +1,4 @@
-import type { BufferGeometry } from "three";
+import type { BufferGeometry, Material } from "three";
 export type Currency = "LKR" | "USD" | "EUR" | "GBP" | "AUD";
 export interface Dimensions {
   width: number;
@@ -24,8 +24,21 @@ export interface MaterialProfile {
 }
 export interface TransformState {
   position: [number, number, number];
+  /** Euler rotation in degrees; converted only at the Three.js boundary. */
   rotation: [number, number, number];
   scale: [number, number, number];
+}
+export interface WorldBounds {
+  min: [number, number, number];
+  max: [number, number, number];
+}
+export interface MeshDiagnostics {
+  volumeReliable: boolean;
+  boundaryEdgeCount: number;
+  nonManifoldEdgeCount: number;
+  degenerateTriangleCount: number;
+  invalidTriangleCount: number;
+  warnings: string[];
 }
 export interface GeometryAnalysis {
   dimensions: Dimensions;
@@ -34,7 +47,8 @@ export interface GeometryAnalysis {
   surfaceAreaCm2: number;
   volumeCm3: number;
   boundingVolumeCm3: number;
-  volumeReliable: boolean;
+  bounds: WorldBounds;
+  diagnostics: MeshDiagnostics;
 }
 export interface LoadedModel {
   name: string;
@@ -42,4 +56,8 @@ export interface LoadedModel {
   size: number;
   geometries: BufferGeometry[];
   analysis: GeometryAnalysis;
+  normalization: [number, number, number];
+  meshNames: string[];
+  hasModelColors: boolean;
+  meshMaterials: Array<Material | Material[] | null>;
 }

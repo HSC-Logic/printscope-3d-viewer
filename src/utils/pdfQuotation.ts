@@ -1,4 +1,9 @@
-import type { LoadedModel, MaterialProfile, PrinterProfile } from "../types";
+import type {
+  GeometryAnalysis,
+  LoadedModel,
+  MaterialProfile,
+  PrinterProfile,
+} from "../types";
 import type { PricingResult } from "../pricing/calculate3DPrintPricing";
 export interface QuoteData {
   customer: string;
@@ -6,6 +11,8 @@ export interface QuoteData {
   project: string;
   notes: string;
   model: LoadedModel;
+  analysis: GeometryAnalysis;
+  fitSummary: string;
   material: MaterialProfile;
   printer: PrinterProfile;
   pricing: PricingResult;
@@ -14,9 +21,28 @@ export interface QuoteData {
   hours: number;
   quantity: number;
   source: "Manual slicer values" | "Quick estimation";
+  validityDate?: string;
+  estimationAssumptions?: Record<string, number>;
   screenshot?: string;
 }
+export function buildQuotationSnapshot(q: QuoteData) {
+  const d = q.analysis.dimensions;
+  return Object.freeze({
+    filename: q.model.name,
+    dimensions: `${d.width.toFixed(1)} × ${d.depth.toFixed(1)} × ${d.height.toFixed(1)} mm`,
+    volumeCm3: q.analysis.volumeCm3,
+    fitSummary: q.fitSummary,
+    quantity: q.quantity,
+    source: q.source,
+    currency: q.currency,
+    tax: q.pricing.taxAmount,
+    unitPrice: q.pricing.unitFinalPrice,
+    totalPrice: q.pricing.totalPrice,
+    assumptions: { ...(q.estimationAssumptions ?? {}) },
+  });
+}
 export async function downloadQuotation(q: QuoteData) {
+  const snapshot = buildQuotationSnapshot(q);
   const [{ jsPDF }, { default: autoTable }] = await Promise.all([
     import("jspdf"),
     import("jspdf-autotable"),
@@ -28,27 +54,35 @@ export async function downloadQuotation(q: QuoteData) {
   doc.text("PrintScope", 14, 18);
   doc.setFontSize(11);
   doc.text(`QUOTATION ${ref}`, 14, 27);
+  const safe = (value: string, max = 160) => value.trim().slice(0, max) || "—";
   doc.text(
-    `Date: ${date.toLocaleDateString()}   Customer: ${q.customer || "—"}   Contact: ${q.contact || "—"}`,
+    `Date: ${date.toLocaleDateString()}   Customer: ${safe(q.customer, 60)}   Contact: ${safe(q.contact, 60)}`,
     14,
     35,
+    { maxWidth: 180 },
   );
-  doc.text(`Project: ${q.project || q.model.name}`, 14, 42);
-  const d = q.model.analysis.dimensions;
+  doc.text(`Project: ${safe(q.project || q.model.name, 100)}`, 14, 42, {
+    maxWidth: 180,
+  });
+  if (q.validityDate)
+    doc.text(`Valid until: ${safe(q.validityDate, 30)}`, 140, 27);
   autoTable(doc, {
     startY: 48,
     head: [["Production details", "Value"]],
     body: [
-      ["Model", q.model.name],
-      [
-        "Dimensions",
-        `${d.width.toFixed(1)} × ${d.depth.toFixed(1)} × ${d.height.toFixed(1)} mm`,
-      ],
+      ["Model", snapshot.filename],
+      ["Dimensions", snapshot.dimensions],
       ["Printer", q.printer.name],
       ["Material", q.material.name],
+      ["Printer fit", q.fitSummary],
+      ["Transformed volume", `${q.analysis.volumeCm3.toFixed(2)} cm³`],
       ["Quantity", String(q.quantity)],
       ["Filament", `${q.filament.toFixed(1)} g (${q.source})`],
       ["Print duration", `${q.hours.toFixed(2)} h (${q.source})`],
+      ...Object.entries(snapshot.assumptions).map(([name, value]) => [
+        name,
+        String(value),
+      ]),
     ],
   });
   autoTable(doc, {
@@ -75,10 +109,22 @@ export async function downloadQuotation(q: QuoteData) {
       ] as Array<[string, number]>
     ).map(([a, b]) => [a, `${q.currency} ${b.toFixed(2)}`]),
   });
-  const y = 190;
+  let y =
+    ((doc as unknown as { lastAutoTable?: { finalY: number } }).lastAutoTable
+      ?.finalY ?? 180) + 10;
+  if (y > 270) {
+    doc.addPage();
+    y = 20;
+  }
   doc.setFontSize(9);
   doc.text(
-    q.notes || "Quotation valid subject to final sliced model review.",
+    doc.splitTextToSize(
+      safe(
+        q.notes || "Quotation valid subject to final sliced model review.",
+        500,
+      ),
+      180,
+    ),
     14,
     y,
   );
@@ -87,13 +133,13 @@ export async function downloadQuotation(q: QuoteData) {
     14,
     y + 7,
   );
+  let screenshotIncluded = true;
   if (q.screenshot)
     try {
       doc.addImage(q.screenshot, "PNG", 135, 45, 60, 55);
     } catch {
-      /* PDF remains valid if canvas image cannot be embedded */
+      screenshotIncluded = false;
     }
-  doc.save(
-    `PrintScope-Quotation-${date.toISOString().slice(0, 10).replaceAll("-", "")}-${ref}.pdf`,
-  );
+  doc.save(`PrintScope-Quotation-${ref}.pdf`);
+  return { reference: ref, screenshotIncluded };
 }

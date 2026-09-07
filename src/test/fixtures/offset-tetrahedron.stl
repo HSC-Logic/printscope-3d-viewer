@@ -1,0 +1,30 @@
+solid offset_tetrahedron
+facet normal 0 0 -1
+outer loop
+vertex 100 200 40
+vertex 100 210 40
+vertex 110 200 40
+endloop
+endfacet
+facet normal 0 -1 0
+outer loop
+vertex 100 200 40
+vertex 110 200 40
+vertex 100 200 50
+endloop
+endfacet
+facet normal -1 0 0
+outer loop
+vertex 100 200 40
+vertex 100 200 50
+vertex 100 210 40
+endloop
+endfacet
+facet normal 1 1 1
+outer loop
+vertex 110 200 40
+vertex 100 210 40
+vertex 100 200 50
+endloop
+endfacet
+endsolid offset_tetrahedron

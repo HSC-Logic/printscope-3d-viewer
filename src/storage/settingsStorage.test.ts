@@ -5,6 +5,7 @@ import {
   loadSettings,
   resetSettings,
   saveSettings,
+  validateSettings,
 } from "./settingsStorage";
 describe("versioned settings", () => {
   beforeEach(() => localStorage.clear());
@@ -21,5 +22,21 @@ describe("versioned settings", () => {
   it("restores defaults", () => {
     saveSettings({ ...defaults(), buffer: 99 });
     expect(resetSettings().buffer).toBe(10);
+  });
+  it("rejects empty profiles, invalid nested values and duplicate ids", () => {
+    const base = defaults();
+    expect(validateSettings({ ...base, printers: [] })).toBe(false);
+    expect(
+      validateSettings({
+        ...base,
+        materials: [{ ...base.materials[0], density: 0 }],
+      }),
+    ).toBe(false);
+    expect(
+      validateSettings({
+        ...base,
+        printers: [base.printers[0], base.printers[0]],
+      }),
+    ).toBe(false);
   });
 });

@@ -207,6 +207,10 @@ h2 {
 .viewport > div:first-of-type {
   height: 100%;
 }
+.viewer-canvas {
+  height: 100%;
+  position: relative;
+}
 .empty {
   position: absolute;
   inset: 50% auto auto 50%;
@@ -376,8 +380,18 @@ h2 {
   margin-left: auto;
   z-index: 5;
 }
+.drawer-backdrop {
+  position: fixed;
+  inset: 64px 0 0;
+  background: #10182899;
+  border: 0;
+  border-radius: 0;
+  z-index: 14;
+}
 .sr-only {
   position: absolute;
+  top:0;
+  left:0;
   width: 1px;
   height: 1px;
   padding: 0;
@@ -450,9 +464,12 @@ h2 {
   }
   .viewbar {
     width: 94%;
+    overflow-x: auto;
+    justify-content: flex-start;
+    padding-bottom: env(safe-area-inset-bottom);
   }
   .viewbar button {
-    flex: 1;
+    flex: 0 0 auto;
     font-size: 0.75rem;
   }
 }

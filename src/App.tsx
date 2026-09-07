@@ -2,6 +2,7 @@ import {
   ChangeEvent,
   DragEvent,
   useEffect,
+  useId,
   useMemo,
   useRef,
   useState,
@@ -31,15 +32,19 @@ import { loadModel, disposeModel } from "./loaders/loadModel";
 import { calculate3DPrintPricing } from "./pricing/calculate3DPrintPricing";
 import { quickEstimate } from "./pricing/estimateMaterial";
 import { checkPrinterFit } from "./geometry/printerFit";
+import { calculateScaleToFit } from "./geometry/scaleToFit";
+import { ViewerErrorBoundary } from "./components/common/ViewerErrorBoundary";
+import { modelMatrix } from "./geometry/analyzeGeometry";
+import { analyzeOffMain } from "./geometry/analyzeOffMain";
 import {
   loadSettings,
   saveSettings,
-  defaults,
   importSettings,
+  resetSettings,
   type Settings,
 } from "./storage/settingsStorage";
 import { downloadQuotation } from "./utils/pdfQuotation";
-import type { LoadedModel, TransformState } from "./types";
+import type { GeometryAnalysis, LoadedModel, TransformState } from "./types";
 const initialTransform: TransformState = {
   position: [0, 0, 0],
   rotation: [0, 0, 0],
@@ -57,23 +62,61 @@ function NumberField({
   onChange,
   min = 0,
   step = "any",
+  max,
 }: {
   label: string;
   value: number;
   onChange: (v: number) => void;
   min?: number;
   step?: number | "any";
+  max?: number;
 }) {
+  const [draft, setDraft] = useState(String(value));
+  const inputRef = useRef<HTMLInputElement>(null),
+    errorId = useId();
+  useEffect(() => {
+    if (document.activeElement !== inputRef.current) setDraft(String(value));
+  }, [value]);
+  const parsed = Number(draft),
+    valid =
+      draft.trim() !== "" &&
+      Number.isFinite(parsed) &&
+      parsed >= min &&
+      (max === undefined || parsed <= max);
   return (
     <label className="field">
       <span>{label}</span>
       <input
+        ref={inputRef}
         type="number"
         min={min}
         step={step}
-        value={value}
-        onChange={(e) => onChange(Number(e.target.value))}
+        value={draft}
+        aria-invalid={!valid}
+        aria-describedby={!valid ? errorId : undefined}
+        max={max}
+        onChange={(e) => {
+          const raw = e.target.value;
+          setDraft(raw);
+          const next = Number(raw);
+          if (
+            raw.trim() !== "" &&
+            Number.isFinite(next) &&
+            next >= min &&
+            (max === undefined || next <= max)
+          )
+            onChange(next);
+        }}
+        onBlur={() => {
+          if (!valid) setDraft(String(value));
+        }}
       />
+      {!valid && (
+        <small id={errorId} role="alert">
+          Enter a finite value from {min}
+          {max === undefined ? " or greater" : ` to ${max}`}.
+        </small>
+      )}
     </label>
   );
 }
@@ -114,8 +157,61 @@ function App() {
     [contact, setContact] = useState(""),
     [project, setProject] = useState(""),
     [notes, setNotes] = useState("");
+  const [validityDate, setValidityDate] = useState("");
   const viewer = useRef<ViewerHandle>(null),
-    fileInput = useRef<HTMLInputElement>(null);
+    fileInput = useRef<HTMLInputElement>(null),
+    viewportRef = useRef<HTMLElement>(null),
+    loadGeneration = useRef(0),
+    loadAbort = useRef<AbortController | null>(null),
+    helpButtonRef = useRef<HTMLButtonElement>(null),
+    helpDialogRef = useRef<HTMLDivElement>(null),
+    previousHelp = useRef(help);
+  const [isFullscreen, setIsFullscreen] = useState(false);
+  const [activePreset, setActivePreset] = useState("isometric");
+  const [advancedScale, setAdvancedScale] = useState(false);
+  const [unreliableAcknowledged, setUnreliableAcknowledged] = useState(false);
+  const [useModelColors, setUseModelColors] = useState(true);
+  const [transformedAnalysis, setTransformedAnalysis] =
+    useState<GeometryAnalysis | null>(null);
+  const [analyzing, setAnalyzing] = useState(false);
+  const transformAbort = useRef<AbortController | null>(null);
+  useEffect(() => {
+    const onChange = () =>
+      setIsFullscreen(document.fullscreenElement === viewportRef.current);
+    document.addEventListener("fullscreenchange", onChange);
+    return () => document.removeEventListener("fullscreenchange", onChange);
+  }, []);
+  useEffect(() => {
+    if (previousHelp.current && !help) helpButtonRef.current?.focus();
+    previousHelp.current = help;
+  }, [help]);
+  function trapDialogFocus(event: React.KeyboardEvent) {
+    if (event.key !== "Tab") return;
+    const items = helpDialogRef.current?.querySelectorAll<HTMLElement>(
+      'button,[href],input,select,textarea,[tabindex]:not([tabindex="-1"])',
+    );
+    if (!items?.length) return;
+    const first = items[0]!,
+      last = items[items.length - 1]!;
+    if (event.shiftKey && document.activeElement === first) {
+      event.preventDefault();
+      last.focus();
+    } else if (!event.shiftKey && document.activeElement === last) {
+      event.preventDefault();
+      first.focus();
+    }
+  }
+  useEffect(() => {
+    const close = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setHelp(false);
+        setLeftOpen(false);
+        setRightOpen(false);
+      }
+    };
+    document.addEventListener("keydown", close);
+    return () => document.removeEventListener("keydown", close);
+  }, []);
   const printer =
     settings.printers.find((p) => p.id === printerId) ?? settings.printers[0]!;
   const material =
@@ -126,32 +222,48 @@ function App() {
       "dark",
       settings.theme === "dark",
     );
-    saveSettings(settings);
+    if (!saveSettings(settings))
+      setError(
+        "Settings could not be saved because browser storage is unavailable or full.",
+      );
   }, [settings]);
   useEffect(() => () => disposeModel(model), [model]);
-  const dimensions = useMemo(
-    () =>
-      model
-        ? {
-            width:
-              model.analysis.dimensions.width * Math.abs(transform.scale[0]),
-            depth:
-              model.analysis.dimensions.depth * Math.abs(transform.scale[1]),
-            height:
-              model.analysis.dimensions.height * Math.abs(transform.scale[2]),
-          }
-        : { width: 0, depth: 0, height: 0 },
-    [model, transform.scale],
-  );
-  const fit = checkPrinterFit(dimensions, printer);
+  useEffect(() => {
+    transformAbort.current?.abort();
+    if (!model) {
+      setTransformedAnalysis(null);
+      return;
+    }
+    const controller = new AbortController();
+    transformAbort.current = controller;
+    setTransformedAnalysis(null);
+    setAnalyzing(true);
+    const matrices = model.geometries.map(() =>
+      modelMatrix(model.normalization, transform),
+    );
+    void analyzeOffMain(model.geometries, matrices, controller.signal)
+      .then((result) => {
+        if (!controller.signal.aborted) setTransformedAnalysis(result);
+      })
+      .catch((error) => {
+        if (!(error instanceof DOMException && error.name === "AbortError"))
+          setError("Transformed geometry analysis failed.");
+      })
+      .finally(() => {
+        if (!controller.signal.aborted) setAnalyzing(false);
+      });
+    return () => controller.abort();
+  }, [model, transform]);
+  const dimensions = transformedAnalysis?.dimensions ?? {
+    width: 0,
+    depth: 0,
+    height: 0,
+  };
+  const fit = checkPrinterFit(transformedAnalysis?.bounds ?? null, printer);
   const auto = useMemo(
     () =>
       quickEstimate({
-        volumeCm3:
-          (model?.analysis.volumeCm3 ?? 0) *
-          Math.abs(
-            transform.scale[0] * transform.scale[1] * transform.scale[2],
-          ),
+        volumeCm3: transformedAnalysis?.volumeCm3 ?? 0,
         density: material.density,
         infillPercent: infill,
         shellFactor: shell,
@@ -160,8 +272,7 @@ function App() {
         flowRateGPerHour: flow,
       }),
     [
-      model,
-      transform.scale,
+      transformedAnalysis,
       material.density,
       infill,
       shell,
@@ -207,51 +318,177 @@ function App() {
   );
   async function selectFile(file?: File) {
     if (!file) return;
+    const generation = ++loadGeneration.current;
+    loadAbort.current?.abort();
+    const controller = new AbortController();
+    loadAbort.current = controller;
     setLoading(true);
     setError("");
     try {
-      const next = await loadModel(file);
-      disposeModel(model);
+      const next = await loadModel(file, controller.signal);
+      if (generation !== loadGeneration.current) {
+        disposeModel(next);
+        return;
+      }
       setModel(next);
-      const d = next.analysis.dimensions;
-      setTransform({ ...initialTransform, position: [0, 0, d.height / 2] });
+      setUnreliableAcknowledged(false);
+      setTransform(initialTransform);
       setProject(file.name.replace(/\.[^.]+$/, ""));
     } catch (e) {
-      setError(
-        e instanceof Error ? e.message : "The model could not be loaded.",
-      );
+      if (!(e instanceof DOMException && e.name === "AbortError"))
+        setError(
+          e instanceof Error ? e.message : "The model could not be loaded.",
+        );
     } finally {
-      setLoading(false);
+      if (generation === loadGeneration.current) setLoading(false);
     }
   }
   function updateSetting<K extends keyof Settings>(key: K, value: Settings[K]) {
     setSettings((s) => ({ ...s, [key]: value }));
   }
-  function downloadImage() {
+  async function downloadImage() {
     try {
       const url = viewer.current?.screenshot();
       if (!url) throw new Error();
+      const blob = await fetch(url).then((response) => response.blob());
+      const objectUrl = URL.createObjectURL(blob);
       const a = document.createElement("a");
-      a.href = url;
-      a.download = "PrintScope-model.png";
+      a.href = objectUrl;
+      a.download = `${model?.name.replace(/\.[^.]+$/, "") ?? "PrintScope-model"}-screenshot.png`;
       a.click();
+      setTimeout(() => URL.revokeObjectURL(objectUrl), 0);
     } catch {
       setError("Screenshot could not be created.");
     }
   }
+  function toggleFullscreen() {
+    const action = isFullscreen
+      ? document.exitFullscreen()
+      : viewportRef.current?.requestFullscreen?.();
+    if (!action) {
+      setError("Fullscreen is unavailable in this browser.");
+      return;
+    }
+    void action.catch(() =>
+      setError("Fullscreen is unavailable in this browser."),
+    );
+  }
   function scaleToFit() {
     if (!model) return;
-    const ratio =
-      Math.min(
-        printer.build.width / model.analysis.dimensions.width,
-        printer.build.depth / model.analysis.dimensions.depth,
-        printer.build.height / model.analysis.dimensions.height,
-      ) * 0.98;
+    const ratio = calculateScaleToFit(model.analysis.dimensions, printer.build);
     setTransform({
       ...initialTransform,
-      position: [0, 0, (model.analysis.dimensions.height * ratio) / 2],
       scale: [ratio, ratio, ratio],
     });
+  }
+  function editPrinterProfile(duplicate = false) {
+    const current = printer;
+    const name = window.prompt(
+      "Printer name",
+      duplicate ? `${current.name} copy` : current.name,
+    );
+    if (!name?.trim()) return;
+    const ask = (label: string, value: number) =>
+      Number(window.prompt(label, String(value)));
+    const next = {
+      ...current,
+      id: duplicate ? `printer-${crypto.randomUUID()}` : current.id,
+      name: name.trim(),
+      build: {
+        width: ask("Build width (mm)", current.build.width),
+        depth: ask("Build depth (mm)", current.build.depth),
+        height: ask("Build height (mm)", current.build.height),
+      },
+      powerW: ask("Rated power (W)", current.powerW),
+      purchasePrice: ask("Purchase price", current.purchasePrice),
+      custom: duplicate || current.custom,
+    };
+    if (
+      ![
+        next.build.width,
+        next.build.depth,
+        next.build.height,
+        next.powerW,
+        next.purchasePrice,
+      ].every((v) => Number.isFinite(v) && v > 0)
+    ) {
+      setError("Printer values must be finite and greater than zero.");
+      return;
+    }
+    setSettings((s) => ({
+      ...s,
+      printers: duplicate
+        ? [...s.printers, next]
+        : s.printers.map((p) => (p.id === next.id ? next : p)),
+    }));
+    if (duplicate) setPrinterId(next.id);
+  }
+  function deletePrinterProfile() {
+    if (!printer.custom) {
+      setError(
+        "Built-in printers can be edited but not deleted. Restore defaults to undo edits.",
+      );
+      return;
+    }
+    if (settings.printers.length === 1) return;
+    const remaining = settings.printers.filter((p) => p.id !== printer.id);
+    setSettings((s) => ({ ...s, printers: remaining }));
+    setPrinterId(remaining[0]!.id);
+  }
+  function editMaterialProfile(duplicate = false) {
+    const current = material;
+    const name = window.prompt(
+      "Material name",
+      duplicate ? `${current.name} copy` : current.name,
+    );
+    if (!name?.trim()) return;
+    const density = Number(
+        window.prompt("Density (g/cm³)", String(current.density)),
+      ),
+      costPerKg = Number(
+        window.prompt("Cost per kg", String(current.costPerKg)),
+      ),
+      color = window.prompt("Colour (#RRGGBB)", current.color) ?? current.color,
+      notes = window.prompt("Notes", current.notes) ?? current.notes;
+    const next = {
+      ...current,
+      id: duplicate ? `material-${crypto.randomUUID()}` : current.id,
+      name: name.trim(),
+      density,
+      costPerKg,
+      color,
+      notes,
+      custom: duplicate || current.custom,
+    };
+    if (
+      !Number.isFinite(density) ||
+      density <= 0 ||
+      !Number.isFinite(costPerKg) ||
+      costPerKg < 0 ||
+      !/^#[0-9a-f]{6}$/i.test(color)
+    ) {
+      setError("Material density, price, or colour is invalid.");
+      return;
+    }
+    setSettings((s) => ({
+      ...s,
+      materials: duplicate
+        ? [...s.materials, next]
+        : s.materials.map((m) => (m.id === next.id ? next : m)),
+    }));
+    if (duplicate) setMaterialId(next.id);
+  }
+  function deleteMaterialProfile() {
+    if (!material.custom) {
+      setError(
+        "Built-in materials can be edited but not deleted. Restore defaults to undo edits.",
+      );
+      return;
+    }
+    if (settings.materials.length === 1) return;
+    const remaining = settings.materials.filter((m) => m.id !== material.id);
+    setSettings((s) => ({ ...s, materials: remaining }));
+    setMaterialId(remaining[0]!.id);
   }
   const displayOptions: Array<[string, boolean, (value: boolean) => void]> = [
     ["Model visible", showModel, setShowModel],
@@ -266,7 +503,10 @@ function App() {
         <button
           className="mobile"
           aria-label="Open model settings"
-          onClick={() => setLeftOpen(true)}
+          onClick={() => {
+            setRightOpen(false);
+            setLeftOpen(true);
+          }}
         >
           <Menu />
         </button>
@@ -281,7 +521,9 @@ function App() {
             type="file"
             accept=".stl,.3mf"
             onChange={(e: ChangeEvent<HTMLInputElement>) =>
-              void selectFile(e.target.files?.[0])
+              void selectFile(e.target.files?.[0]).finally(() => {
+                e.target.value = "";
+              })
             }
           />
           <button
@@ -290,19 +532,34 @@ function App() {
           >
             <FileUp /> {model ? "Replace" : "Upload"} Model
           </button>
-          <button title="Reset view" onClick={() => viewer.current?.reset()}>
+          <button
+            aria-label="Reset camera view"
+            title="Reset view"
+            onClick={() => viewer.current?.reset()}
+          >
             <Focus />
           </button>
-          <button title="Screenshot" disabled={!model} onClick={downloadImage}>
+          <button
+            aria-label="Download model screenshot"
+            title="Screenshot"
+            disabled={!model}
+            onClick={() => void downloadImage()}
+          >
             <Image />
           </button>
           <button
-            title="Full screen"
-            onClick={() => void document.documentElement.requestFullscreen?.()}
+            aria-label={
+              isFullscreen
+                ? "Exit viewer fullscreen"
+                : "Enter viewer fullscreen"
+            }
+            title={isFullscreen ? "Exit full screen" : "Full screen"}
+            onClick={toggleFullscreen}
           >
             <Maximize />
           </button>
           <button
+            aria-label={`Switch to ${settings.theme === "dark" ? "light" : "dark"} theme`}
             title="Toggle theme"
             onClick={() =>
               updateSetting(
@@ -313,22 +570,41 @@ function App() {
           >
             {settings.theme === "dark" ? <Sun /> : <Moon />}
           </button>
-          <button title="Help" onClick={() => setHelp(true)}>
+          <button
+            ref={helpButtonRef}
+            aria-label="Open help"
+            title="Help"
+            onClick={() => setHelp(true)}
+          >
             <HelpCircle />
           </button>
         </div>
         <button
           className="mobile"
           aria-label="Open estimate and quotation"
-          onClick={() => setRightOpen(true)}
+          onClick={() => {
+            setLeftOpen(false);
+            setRightOpen(true);
+          }}
         >
           <ChevronLeft />
         </button>
       </header>
       <main>
+        {(leftOpen || rightOpen) && (
+          <button
+            className="drawer-backdrop mobile"
+            aria-label="Close navigation drawer"
+            onClick={() => {
+              setLeftOpen(false);
+              setRightOpen(false);
+            }}
+          />
+        )}
         <aside className={`left ${leftOpen ? "open" : ""}`}>
           <button
             className="drawer-close mobile"
+            aria-label="Close model settings drawer"
             onClick={() => setLeftOpen(false)}
           >
             <X />
@@ -341,6 +617,16 @@ function App() {
                 {(model.size / 1048576).toFixed(2)} MB ·{" "}
                 {model.extension.toUpperCase()}
               </span>
+              <button
+                onClick={() => {
+                  loadGeneration.current++;
+                  loadAbort.current?.abort();
+                  setModel(null);
+                  setTransform(initialTransform);
+                }}
+              >
+                Remove model
+              </button>
             </div>
           ) : (
             <p className="muted">No model loaded.</p>
@@ -359,6 +645,18 @@ function App() {
               ))}
             </select>
           </label>
+          <div className="row">
+            <button onClick={() => editPrinterProfile(false)}>Edit</button>
+            <button onClick={() => editPrinterProfile(true)}>
+              Duplicate / add
+            </button>
+            <button
+              disabled={!printer.custom || settings.printers.length === 1}
+              onClick={deletePrinterProfile}
+            >
+              Delete custom
+            </button>
+          </div>
           <p className="muted">
             {printer.build.width} × {printer.build.depth} ×{" "}
             {printer.build.height} mm · {printer.powerW} W
@@ -377,9 +675,22 @@ function App() {
               ))}
             </select>
           </label>
+          <div className="row">
+            <button onClick={() => editMaterialProfile(false)}>Edit</button>
+            <button onClick={() => editMaterialProfile(true)}>
+              Duplicate / add
+            </button>
+            <button
+              disabled={!material.custom || settings.materials.length === 1}
+              onClick={deleteMaterialProfile}
+            >
+              Delete custom
+            </button>
+          </div>
           <NumberField
             label="Density (g/cm³)"
             value={material.density}
+            min={0.001}
             onChange={(v) =>
               setSettings((s) => ({
                 ...s,
@@ -416,6 +727,16 @@ function App() {
               }
             />
           </label>
+          {model?.hasModelColors && (
+            <label className="toggle">
+              <span>Use model colours</span>
+              <input
+                type="checkbox"
+                checked={useModelColors}
+                onChange={(e) => setUseModelColors(e.target.checked)}
+              />
+            </label>
+          )}
           <h2>Display</h2>
           <label className="field">
             <span>Render mode</span>
@@ -440,6 +761,7 @@ function App() {
           ))}
         </aside>
         <section
+          ref={viewportRef}
           className="viewport"
           onDragEnter={(e) => {
             e.preventDefault();
@@ -454,18 +776,23 @@ function App() {
           }}
         >
           {model ? (
-            <ModelViewer
-              ref={viewer}
-              model={showModel ? model : null}
-              printer={printer}
-              transform={transform}
-              color={material.color}
-              mode={mode}
-              showGrid={showGrid}
-              showAxes={showAxes}
-              showVolume={showVolume}
-              orthographic={ortho}
-            />
+            <ViewerErrorBoundary>
+              <ModelViewer
+                ref={viewer}
+                model={showModel ? model : null}
+                printer={printer}
+                transform={transform}
+                color={material.color}
+                mode={mode}
+                showGrid={showGrid}
+                showAxes={showAxes}
+                showVolume={showVolume}
+                orthographic={ortho}
+                background={settings.theme === "dark" ? "#10131a" : "#e7eaf0"}
+                bounds={transformedAnalysis?.bounds ?? null}
+                useModelColors={useModelColors}
+              />
+            </ViewerErrorBoundary>
           ) : (
             <button
               className="empty"
@@ -478,22 +805,57 @@ function App() {
             </button>
           )}
           {drag && <div className="drop">Release to inspect model</div>}
-          {loading && (
+          {(loading || analyzing) && (
             <div className="loading" role="status">
-              Loading and analysing geometry…
+              {loading ? "Loading model…" : "Analysing transformed geometry…"}
             </div>
           )}
           {error && (
             <div className="error" role="alert">
               {error}
-              <button onClick={() => setError("")}>
+              <button aria-label="Dismiss error" onClick={() => setError("")}>
                 <X />
               </button>
             </div>
           )}
           <div className="viewbar">
+            {(
+              [
+                "isometric",
+                "front",
+                "back",
+                "left",
+                "right",
+                "top",
+                "bottom",
+              ] as const
+            ).map((preset) => (
+              <button
+                key={preset}
+                aria-label={`${preset} camera view`}
+                aria-pressed={activePreset === preset}
+                onClick={() => {
+                  setActivePreset(preset);
+                  viewer.current?.view(preset);
+                }}
+              >
+                {preset.charAt(0).toUpperCase() + preset.slice(1)}
+              </button>
+            ))}
+            <button
+              disabled={!model}
+              onClick={() => {
+                setActivePreset("isometric");
+                viewer.current?.view("isometric");
+              }}
+            >
+              Fit to model
+            </button>
             <button onClick={() => viewer.current?.reset()}>
               <Camera /> Reset camera
+            </button>
+            <button onClick={toggleFullscreen}>
+              {isFullscreen ? "Exit fullscreen" : "Fullscreen"}
             </button>
             <button disabled={!model} onClick={scaleToFit}>
               <Focus /> Scale to fit printer
@@ -503,6 +865,7 @@ function App() {
         <aside className={`right ${rightOpen ? "open" : ""}`}>
           <button
             className="drawer-close mobile"
+            aria-label="Close estimate and quotation drawer"
             onClick={() => setRightOpen(false)}
           >
             <ChevronRight />
@@ -525,28 +888,35 @@ function App() {
                 Surface area
                 <b>
                   {model
-                    ? `${model.analysis.surfaceAreaCm2.toFixed(2)} cm²`
+                    ? `${transformedAnalysis?.surfaceAreaCm2.toFixed(2)} cm²`
                     : "—"}
                 </b>
               </span>
               <span>
                 Enclosed volume
                 <b>
-                  {model ? `${model.analysis.volumeCm3.toFixed(2)} cm³` : "—"}
+                  {model
+                    ? `${transformedAnalysis?.volumeCm3.toFixed(2)} cm³`
+                    : "—"}
                 </b>
               </span>
             </div>
-            {model && !model.analysis.volumeReliable && (
+            {model && !transformedAnalysis?.diagnostics.volumeReliable && (
               <p className="warning">
-                ⚠ Volume may be inaccurate: the mesh may be open, inconsistently
-                wound, or degenerate.
+                Volume may be inaccurate.{" "}
+                {transformedAnalysis?.diagnostics.warnings.join(" ") ||
+                  "Analysis is still pending."}
               </p>
             )}
-            <p className={fit.fits ? "success" : "warning"}>
-              {fit.fits
-                ? "✓ Fits selected printer"
-                : `⚠ Does not fit: ${fit.overflow.join(", ")} overflow`}
-            </p>
+            {!model ? (
+              <p className="muted">Upload a model to check printer fit.</p>
+            ) : (
+              <p className={fit.fits ? "success" : "warning"}>
+                {fit.fits
+                  ? "Fits selected printer."
+                  : `Does not fit: ${fit.violations.map((v) => `${v.side} by ${v.amountMm.toFixed(2)} mm`).join(", ")}.`}
+              </p>
+            )}
           </section>
           <section>
             <h2>Transform</h2>
@@ -573,30 +943,101 @@ function App() {
             <NumberField
               label="Uniform scale (%)"
               value={transform.scale[0] * 100}
+              min={0.01}
+              max={100000}
               onChange={(v) =>
                 setTransform((t) => ({
                   ...t,
                   scale: [v / 100, v / 100, v / 100],
-                  position: [
-                    t.position[0],
-                    t.position[1],
-                    model ? (model.analysis.dimensions.height * v) / 200 : 0,
-                  ],
                 }))
               }
             />
-            <button
-              onClick={() =>
-                setTransform(
-                  model
-                    ? {
-                        ...initialTransform,
-                        position: [0, 0, model.analysis.dimensions.height / 2],
-                      }
-                    : initialTransform,
-                )
-              }
-            >
+            <label className="toggle">
+              <span>Advanced non-uniform scale</span>
+              <input
+                type="checkbox"
+                checked={advancedScale}
+                onChange={(e) => {
+                  if (
+                    e.target.checked &&
+                    !window.confirm(
+                      "Non-uniform scaling changes the model's proportions. Continue?",
+                    )
+                  )
+                    return;
+                  setAdvancedScale(e.target.checked);
+                }}
+              />
+            </label>
+            {advancedScale && (
+              <div className="grid3">
+                {(["X", "Y", "Z"] as const).map((axis, index) => (
+                  <NumberField
+                    key={axis}
+                    label={`Scale ${axis} (%)`}
+                    value={(transform.scale[index] ?? 1) * 100}
+                    min={0.01}
+                    max={100000}
+                    onChange={(value) =>
+                      setTransform((t) => ({
+                        ...t,
+                        scale: t.scale.map((current, i) =>
+                          i === index ? value / 100 : current,
+                        ) as [number, number, number],
+                      }))
+                    }
+                  />
+                ))}
+              </div>
+            )}
+            <div className="grid3">
+              {(["X", "Y", "Z"] as const).map((axis, index) => (
+                <NumberField
+                  key={axis}
+                  label={`Rotation ${axis} (°)`}
+                  value={transform.rotation[index] ?? 0}
+                  min={-3600}
+                  onChange={(value) =>
+                    setTransform((t) => ({
+                      ...t,
+                      rotation: t.rotation.map((current, i) =>
+                        i === index ? value : current,
+                      ) as [number, number, number],
+                    }))
+                  }
+                />
+              ))}
+            </div>
+            <div className="row">
+              <button
+                disabled={!model}
+                onClick={() =>
+                  setTransform((t) => ({
+                    ...t,
+                    position: [0, 0, t.position[2]],
+                  }))
+                }
+              >
+                Centre on plate
+              </button>
+              <button
+                disabled={!model}
+                onClick={() =>
+                  transformedAnalysis &&
+                  setTransform((t) => ({
+                    ...t,
+                    position: [
+                      t.position[0],
+                      t.position[1],
+                      t.position[2] - transformedAnalysis.bounds.min[2],
+                    ],
+                  }))
+                }
+              >
+                Place on build plate
+              </button>
+            </div>
+            <button onClick={() => setTransform(initialTransform)}>
               <RotateCcw /> Reset transform
             </button>
           </section>
@@ -605,12 +1046,14 @@ function App() {
             <div className="segmented">
               <button
                 className={estimating === "manual" ? "active" : ""}
+                aria-pressed={estimating === "manual"}
                 onClick={() => setEstimating("manual")}
               >
                 Manual · recommended
               </button>
               <button
                 className={estimating === "quick" ? "active" : ""}
+                aria-pressed={estimating === "quick"}
                 onClick={() => setEstimating("quick")}
               >
                 Quick estimate
@@ -634,6 +1077,7 @@ function App() {
                     value={minutes}
                     onChange={setMinutes}
                     min={0}
+                    max={59}
                   />
                 </div>
               </>
@@ -643,14 +1087,28 @@ function App() {
                   Preliminary estimate only. Actual filament usage and print
                   time may differ after slicing.
                 </p>
+                {model && !transformedAnalysis?.diagnostics.volumeReliable && (
+                  <label className="warning">
+                    <input
+                      type="checkbox"
+                      checked={unreliableAcknowledged}
+                      onChange={(e) =>
+                        setUnreliableAcknowledged(e.target.checked)
+                      }
+                    />{" "}
+                    I understand the geometry-derived volume is unreliable and
+                    accept using it for this preliminary estimate.
+                  </label>
+                )}
                 <div className="grid2">
                   <NumberField
                     label="Infill (%)"
                     value={infill}
                     onChange={setInfill}
+                    max={100}
                   />
                   <NumberField
-                    label="Shell factor"
+                    label="Shell contribution multiplier (approx.)"
                     value={shell}
                     onChange={setShell}
                   />
@@ -658,16 +1116,19 @@ function App() {
                     label="Support (%)"
                     value={support}
                     onChange={setSupport}
+                    max={500}
                   />
                   <NumberField
                     label="Waste (%)"
                     value={waste}
                     onChange={setWaste}
+                    max={100}
                   />
                   <NumberField
                     label="Flow (g/hour)"
                     value={flow}
                     onChange={setFlow}
+                    min={0.01}
                   />
                 </div>
                 <p>
@@ -701,19 +1162,33 @@ function App() {
                 onChange={(v) => updateSetting("laborRate", v)}
               />
               <NumberField
+                label="Annual maintenance"
+                value={settings.maintenance}
+                onChange={(v) => updateSetting("maintenance", v)}
+              />
+              <NumberField
+                label="Estimated annual print hours"
+                value={settings.annualHours}
+                min={0.01}
+                onChange={(v) => updateSetting("annualHours", v)}
+              />
+              <NumberField
                 label="Buffer (%)"
                 value={settings.buffer}
                 onChange={(v) => updateSetting("buffer", v)}
+                max={1000}
               />
               <NumberField
                 label="Profit markup (%)"
                 value={settings.markup}
                 onChange={(v) => updateSetting("markup", v)}
+                max={1000}
               />
               <NumberField
                 label="Tax (%)"
                 value={settings.tax}
                 onChange={(v) => updateSetting("tax", v)}
+                max={100}
               />
               <NumberField
                 label="Quantity"
@@ -746,6 +1221,10 @@ function App() {
                 ))}
               </select>
             </label>
+            <p className="muted">
+              Currency changes labels only; no exchange-rate conversion is
+              performed.
+            </p>
             <div className="breakdown">
               {[
                 ["Material", pricing.materialCost],
@@ -754,8 +1233,11 @@ function App() {
                 ["Maintenance", pricing.maintenanceCost],
                 ["Base cost", pricing.baseCost],
                 ["Buffer", pricing.bufferAmount],
+                ["Buffered cost", pricing.bufferedCost],
                 ["Profit markup", pricing.profitAmount],
+                ["Selling price", pricing.sellingPrice],
                 ["Tax", pricing.taxAmount],
+                ["Final unit price", pricing.unitFinalPrice],
               ].map(([l, v]) => (
                 <span key={String(l)}>
                   {l}
@@ -798,32 +1280,77 @@ function App() {
                 onChange={(e) => setNotes(e.target.value)}
               />
             </label>
+            <label className="field">
+              <span>Valid until (optional)</span>
+              <input
+                type="date"
+                value={validityDate}
+                onChange={(e) => setValidityDate(e.target.value)}
+              />
+            </label>
             <button
               className="primary wide"
-              disabled={!model}
+              disabled={
+                !model ||
+                !transformedAnalysis ||
+                (estimating === "quick" &&
+                  !transformedAnalysis.diagnostics.volumeReliable &&
+                  !unreliableAcknowledged)
+              }
               onClick={() =>
-                model &&
-                void downloadQuotation({
-                  customer,
-                  contact,
-                  project,
-                  notes,
-                  model,
-                  material,
-                  printer,
-                  pricing,
-                  currency: settings.currency,
-                  filament: used,
-                  hours: printHours,
-                  quantity,
-                  source:
-                    estimating === "manual"
-                      ? "Manual slicer values"
-                      : "Quick estimation",
-                  screenshot: viewer.current?.screenshot(),
-                }).catch(() =>
-                  setError("PDF quotation could not be generated."),
-                )
+                document.querySelector('[aria-invalid="true"]')
+                  ? setError(
+                      "Correct invalid numeric fields before generating a quotation.",
+                    )
+                  : model &&
+                    transformedAnalysis &&
+                    void downloadQuotation({
+                      customer,
+                      contact,
+                      project,
+                      notes,
+                      validityDate,
+                      estimationAssumptions:
+                        estimating === "quick"
+                          ? {
+                              solidVolumeCm3: transformedAnalysis.volumeCm3,
+                              density: material.density,
+                              infillPercent: infill,
+                              shellContributionMultiplier: shell,
+                              supportPercent: support,
+                              wastePercent: waste,
+                              flowRateGPerHour: flow,
+                            }
+                          : undefined,
+                      model,
+                      analysis: transformedAnalysis,
+                      fitSummary: fit.fits
+                        ? "Fits selected printer"
+                        : fit.violations
+                            .map((v) => `${v.side} ${v.amountMm.toFixed(2)} mm`)
+                            .join(", "),
+                      material,
+                      printer,
+                      pricing,
+                      currency: settings.currency,
+                      filament: used,
+                      hours: printHours,
+                      quantity,
+                      source:
+                        estimating === "manual"
+                          ? "Manual slicer values"
+                          : "Quick estimation",
+                      screenshot: viewer.current?.screenshot(),
+                    })
+                      .then((result) => {
+                        if (!result.screenshotIncluded)
+                          setError(
+                            "Quotation downloaded, but the model screenshot could not be embedded.",
+                          );
+                      })
+                      .catch(() =>
+                        setError("PDF quotation could not be generated."),
+                      )
               }
             >
               <Download /> Download PDF quotation
@@ -841,7 +1368,7 @@ function App() {
                   a.href = URL.createObjectURL(blob);
                   a.download = "printscope-settings.json";
                   a.click();
-                  URL.revokeObjectURL(a.href);
+                  setTimeout(() => URL.revokeObjectURL(a.href), 0);
                 }}
               >
                 Export JSON
@@ -857,18 +1384,41 @@ function App() {
                     if (f)
                       void f
                         .text()
-                        .then((raw) => setSettings(importSettings(raw)))
+                        .then((raw) => {
+                          const next = importSettings(raw);
+                          setSettings(next);
+                          setPrinterId(
+                            next.printers.some((p) => p.id === printerId)
+                              ? printerId
+                              : next.printers[0]!.id,
+                          );
+                          setMaterialId(
+                            next.materials.some((m) => m.id === materialId)
+                              ? materialId
+                              : next.materials[0]!.id,
+                          );
+                        })
                         .catch((err) =>
                           setError(
                             err instanceof Error
                               ? err.message
                               : "Invalid settings",
                           ),
-                        );
+                        )
+                        .finally(() => {
+                          e.target.value = "";
+                        });
                   }}
                 />
               </label>
-              <button onClick={() => setSettings(defaults())}>
+              <button
+                onClick={() => {
+                  const next = resetSettings();
+                  setSettings(next);
+                  setPrinterId(next.printers[0]!.id);
+                  setMaterialId(next.materials[0]!.id);
+                }}
+              >
                 Restore defaults
               </button>
             </div>
@@ -878,13 +1428,17 @@ function App() {
       {help && (
         <div className="modal-backdrop" role="presentation">
           <div
+            ref={helpDialogRef}
             className="modal"
             role="dialog"
             aria-modal="true"
             aria-labelledby="help-title"
+            aria-describedby="help-description"
+            onKeyDown={trapDialogFocus}
           >
             <button
               className="modal-x"
+              autoFocus
               aria-label="Close help"
               onClick={() => {
                 setHelp(false);
@@ -894,7 +1448,7 @@ function App() {
               <X />
             </button>
             <h1 id="help-title">Welcome to PrintScope</h1>
-            <p>
+            <p id="help-description">
               Upload or drop an STL or 3MF file. Drag to rotate, scroll or pinch
               to zoom, and right-drag to pan.
             </p>
