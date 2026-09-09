@@ -32,6 +32,7 @@ describe("PrintScope responsive user flows", () => {
     expect(screen.getByLabelText("Position X")).toBeDisabled();
     expect(screen.getByRole("button", { name: /Download PDF quotation/, hidden: true })).toBeDisabled();
     expect(screen.queryByText(/0\.0 × 0\.0 × 0\.0/)).not.toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Reload PrintScope" })).toHaveAttribute("href", "/printscope-3d-viewer/");
   });
 
   it("shows the model viewer and toolbar after loading", async () => {
@@ -72,6 +73,9 @@ describe("PrintScope responsive user flows", () => {
     const right = screen.getByRole("button", { name: "Open estimate and quotation" });
     fireEvent.click(left);
     expect(screen.getByRole("dialog", { name: "Model settings" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Close model settings" }));
+    expect(screen.queryByRole("dialog", { name: "Model settings" })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Open model settings" }));
     fireEvent.click(right);
     expect(screen.queryByRole("dialog", { name: "Model settings" })).not.toBeInTheDocument();
     expect(screen.getByRole("dialog", { name: "Estimate and quotation" })).toBeInTheDocument();

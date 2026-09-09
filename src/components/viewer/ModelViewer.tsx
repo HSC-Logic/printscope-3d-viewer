@@ -247,7 +247,7 @@ export const ModelViewer = forwardRef<ViewerHandle, Props>((p, ref) => {
             />
           </mesh>
         )}
-        <GizmoHelper alignment="bottom-right" margin={[70, 70]}>
+        <GizmoHelper alignment="top-right" margin={[60, 60]}>
           <GizmoViewport />
         </GizmoHelper>
       </Canvas>

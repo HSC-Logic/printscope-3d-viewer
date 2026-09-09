@@ -202,7 +202,7 @@ function App() {
     if (!compactLayout) return;
     const open = leftOpen ? leftDrawerRef.current : rightOpen ? rightDrawerRef.current : null;
     if (open) {
-      open.querySelector<HTMLElement>("button")?.focus();
+      open.querySelector<HTMLElement>("[data-drawer-heading]")?.focus();
       document.body.classList.add("drawer-open");
     } else {
       document.body.classList.remove("drawer-open");
@@ -457,18 +457,19 @@ function App() {
         <button
           ref={leftOpenerRef}
           className="mobile"
-          aria-label="Open model settings"
+          aria-label={leftOpen ? "Close model settings" : "Open model settings"}
+          aria-expanded={leftOpen}
           onClick={() => {
             setRightOpen(false);
-            setLeftOpen(true);
+            setLeftOpen((open) => !open);
           }}
         >
-          <Menu />
+          {leftOpen ? <X /> : <Menu />}
         </button>
-        <div className="logo">
+        <a className="logo" href={import.meta.env.BASE_URL} aria-label="Reload PrintScope">
           <Box /> <span>PrintScope</span>
           <small>3D Viewer & Cost Estimator</small>
-        </div>
+        </a>
         <div className="toolbar header-toolbar">
           <input
             ref={fileInput}
@@ -535,13 +536,14 @@ function App() {
         <button
           ref={rightOpenerRef}
           className="mobile"
-          aria-label="Open estimate and quotation"
+          aria-label={rightOpen ? "Close estimate and quotation" : "Open estimate and quotation"}
+          aria-expanded={rightOpen}
           onClick={() => {
             setLeftOpen(false);
-            setRightOpen(true);
+            setRightOpen((open) => !open);
           }}
         >
-          <ChevronLeft />
+          {rightOpen ? <ChevronRight /> : <ChevronLeft />}
         </button>
       </header>
       <main>
@@ -558,13 +560,9 @@ function App() {
           />
         )}
         <aside ref={leftDrawerRef} className={`left ${leftOpen ? "open" : ""}`} role={compactLayout ? "dialog" : undefined} aria-modal={compactLayout && leftOpen ? "true" : undefined} aria-label="Model settings" aria-hidden={compactLayout && !leftOpen ? "true" : undefined} inert={compactLayout && !leftOpen}>
-          <button
-            className="drawer-close mobile"
-            aria-label="Close model settings drawer"
-            onClick={() => { setLeftOpen(false); leftOpenerRef.current?.focus(); }}
-          >
-            <X />
-          </button>
+          <div className="drawer-topbar mobile">
+            <strong data-drawer-heading tabIndex={-1}>Model settings</strong>
+          </div>
           <h2>Model</h2>
           {model ? (
             <div className="file-card">
@@ -601,7 +599,7 @@ function App() {
               ))}
             </select>
           </label>
-          <div className="row">
+          <div className="row profile-actions">
             <button onClick={() => editPrinterProfile(false)}>Edit</button>
             <button onClick={() => editPrinterProfile(true)}>
               Duplicate / add
@@ -631,7 +629,7 @@ function App() {
               ))}
             </select>
           </label>
-          <div className="row">
+          <div className="row profile-actions">
             <button onClick={() => editMaterialProfile(false)}>Edit</button>
             <button onClick={() => editMaterialProfile(true)}>
               Duplicate / add
@@ -771,13 +769,9 @@ function App() {
           {model && <ViewerToolbar active={activePreset} fullscreen={isFullscreen} onView={(preset) => { setActivePreset(preset); viewer.current?.view(preset); }} onFit={() => viewer.current?.view("isometric")} onReset={() => viewer.current?.reset()} onFullscreen={toggleFullscreen} />}
         </section>
         <aside ref={rightDrawerRef} className={`right ${rightOpen ? "open" : ""}`} role={compactLayout ? "dialog" : undefined} aria-modal={compactLayout && rightOpen ? "true" : undefined} aria-label="Estimate and quotation" aria-hidden={compactLayout && !rightOpen ? "true" : undefined} inert={compactLayout && !rightOpen}>
-          <button
-            className="drawer-close mobile"
-            aria-label="Close estimate and quotation drawer"
-            onClick={() => { setRightOpen(false); rightOpenerRef.current?.focus(); }}
-          >
-            <ChevronRight />
-          </button>
+          <div className="drawer-topbar mobile">
+            <strong data-drawer-heading tabIndex={-1}>Estimate & quotation</strong>
+          </div>
           <div className="panel-tabs" role="tablist" aria-label="Estimate panel" onKeyDown={(event) => {
             if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
             event.preventDefault();
