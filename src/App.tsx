@@ -26,7 +26,7 @@ import {
   ModelViewer,
   type ViewerHandle,
 } from "./components/viewer/ModelViewer";
-import { loadModel, disposeModel } from "./loaders/loadModel";
+import { loadModel, disposeModel, MODEL_ACCEPT, MODEL_EXTENSIONS } from "./loaders/loadModel";
 import { calculate3DPrintPricing } from "./pricing/calculate3DPrintPricing";
 import { quickEstimate } from "./pricing/estimateMaterial";
 import { checkPrinterFit } from "./geometry/printerFit";
@@ -339,7 +339,7 @@ function App() {
       quantity,
     ],
   );
-  async function selectFile(file?: File) {
+  async function selectFile(file?: File, companionFiles: File[] = []) {
     if (!file) return;
     const generation = ++loadGeneration.current;
     loadAbort.current?.abort();
@@ -348,7 +348,7 @@ function App() {
     setLoading(true);
     setError("");
     try {
-      const next = await loadModel(file, controller.signal);
+      const next = await loadModel(file, controller.signal, companionFiles);
       if (generation !== loadGeneration.current) {
         disposeModel(next);
         return;
@@ -365,6 +365,17 @@ function App() {
     } finally {
       if (generation === loadGeneration.current) setLoading(false);
     }
+  }
+  function selectFiles(files?: FileList | File[]) {
+    const selected = Array.from(files ?? []);
+    const primary = selected.find((candidate) =>
+      MODEL_EXTENSIONS.includes(candidate.name.split(".").pop()?.toLowerCase() as (typeof MODEL_EXTENSIONS)[number]),
+    );
+    if (!primary) {
+      setError("Choose an STL, 3MF, OBJ, GLB, glTF, or PLY model.");
+      return Promise.resolve();
+    }
+    return selectFile(primary, selected.filter((candidate) => candidate !== primary));
   }
   function updateSetting<K extends keyof Settings>(key: K, value: Settings[K]) {
     setSettings((s) => ({ ...s, [key]: value }));
@@ -475,9 +486,10 @@ function App() {
             ref={fileInput}
             className="sr-only"
             type="file"
-            accept=".stl,.3mf"
+            accept={MODEL_ACCEPT}
+            multiple
             onChange={(e: ChangeEvent<HTMLInputElement>) =>
-              void selectFile(e.target.files?.[0]).finally(() => {
+              void selectFiles(e.target.files ?? undefined).finally(() => {
                 e.target.value = "";
               })
             }
@@ -728,7 +740,7 @@ function App() {
           onDrop={(e: DragEvent) => {
             e.preventDefault();
             setDrag(false);
-            void selectFile(e.dataTransfer.files[0]);
+            void selectFiles(e.dataTransfer.files);
           }}
         >
           {model ? (
@@ -1334,7 +1346,7 @@ function App() {
         </aside>
       </main>
       {help && (
-        <Dialog title="Welcome to PrintScope" description="Upload or drop an STL or 3MF file. Drag to rotate, scroll or pinch to zoom, and right-drag to pan." onClose={() => { setHelp(false); localStorage.setItem("printscope.help.seen", "1"); }} returnFocus={helpButtonRef}>
+        <Dialog title="Welcome to PrintScope" description="Upload or drop an STL, 3MF, OBJ, GLB, glTF, or PLY file. Drag to rotate, scroll or pinch to zoom, and right-drag to pan." onClose={() => { setHelp(false); localStorage.setItem("printscope.help.seen", "1"); }} returnFocus={helpButtonRef}>
             <p>
               PrintScope analyses geometry and previews build-volume fit; it
               does not slice models or generate G-code. For quotations, manual

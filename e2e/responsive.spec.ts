@@ -40,7 +40,7 @@ test("empty state is centred, unobstructed, and themed", async ({ page }, testIn
 });
 
 test("loaded toolbar stays within viewer at normal and zoomed layouts", async ({ page }, testInfo) => {
-  await page.locator('input[type="file"][accept=".stl,.3mf"]').setInputFiles(path.resolve("src/test/fixtures/offset-tetrahedron.stl"));
+  await page.locator('input[type="file"][multiple]').setInputFiles(path.resolve("src/test/fixtures/offset-tetrahedron.stl"));
   const toolbar = page.getByTestId("viewer-toolbar");
   await expect(toolbar).toBeVisible();
   const original = page.viewportSize()!;

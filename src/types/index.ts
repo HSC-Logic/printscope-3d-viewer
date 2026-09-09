@@ -52,7 +52,7 @@ export interface GeometryAnalysis {
 }
 export interface LoadedModel {
   name: string;
-  extension: "stl" | "3mf";
+  extension: "stl" | "3mf" | "obj" | "glb" | "gltf" | "ply";
   size: number;
   geometries: BufferGeometry[];
   analysis: GeometryAnalysis;

@@ -1,9 +1,18 @@
-import { Mesh, BufferGeometry, type Material } from "three";
+import {
+  Mesh,
+  BufferGeometry,
+  LoadingManager,
+  type Material,
+  type Object3D,
+} from "three";
 import { normalizationFor } from "../geometry/analyzeGeometry";
 import { analyzeOffMain } from "../geometry/analyzeOffMain";
 import type { LoadedModel } from "../types";
 const MAX = 100 * 1024 * 1024;
 const MAX_TRIANGLES = 5_000_000;
+export const MODEL_EXTENSIONS = ["stl", "3mf", "obj", "glb", "gltf", "ply"] as const;
+export const MODEL_ACCEPT = `${MODEL_EXTENSIONS.map((extension) => `.${extension}`).join(",")},.bin,.png,.jpg,.jpeg,.webp`;
+type ModelExtension = (typeof MODEL_EXTENSIONS)[number];
 function disposeMaterials(materials: Array<Material | Material[] | null>) {
   const unique = new Set<Material>();
   materials
@@ -25,16 +34,33 @@ function disposeMaterials(materials: Array<Material | Material[] | null>) {
 export async function loadModel(
   file: File,
   signal?: AbortSignal,
+  companionFiles: File[] = [],
 ): Promise<LoadedModel> {
-  const ext = file.name.split(".").pop()?.toLowerCase();
-  if (ext !== "stl" && ext !== "3mf")
-    throw new Error("Unsupported file. Choose an STL or 3MF model.");
+  const candidateExtension = file.name.split(".").pop()?.toLowerCase();
+  if (!MODEL_EXTENSIONS.includes(candidateExtension as ModelExtension))
+    throw new Error("Unsupported file. Choose an STL, 3MF, OBJ, GLB, glTF, or PLY model.");
+  const ext = candidateExtension as ModelExtension;
   if (file.size === 0) throw new Error("This file is empty.");
-  if (file.size > MAX)
-    throw new Error("This file exceeds the 100 MB browser limit.");
+  const selectionSize = file.size + companionFiles.reduce((total, companion) => total + companion.size, 0);
+  if (selectionSize > MAX)
+    throw new Error("This model and its companion files exceed the 100 MB browser limit.");
   let geometries: BufferGeometry[] = [];
   const meshNames: string[] = [];
   const meshMaterials: Array<Material | Material[] | null> = [];
+  const objectUrls: string[] = [];
+  const addScene = (root: Object3D, unitScale = 1) => {
+    root.updateMatrixWorld(true);
+    root.traverse((object) => {
+      if (!(object as Mesh).isMesh) return;
+      const mesh = object as Mesh;
+      if (!mesh.geometry.getAttribute("position")) return;
+      const geometry = mesh.geometry.clone().applyMatrix4(mesh.matrixWorld);
+      if (unitScale !== 1) geometry.scale(unitScale, unitScale, unitScale);
+      geometries.push(geometry);
+      meshNames.push(mesh.name || `Mesh ${meshNames.length + 1}`);
+      meshMaterials.push(mesh.material);
+    });
+  };
   try {
     const data = await file.arrayBuffer();
     if (signal?.aborted)
@@ -48,31 +74,52 @@ export async function loadModel(
       geometries = [geometry];
       meshNames.push(file.name.replace(/\.[^.]+$/, ""));
       meshMaterials.push(null);
-    } else {
+    } else if (ext === "3mf") {
       const { ThreeMFLoader } =
         await import("three/examples/jsm/loaders/3MFLoader.js");
       const group = new ThreeMFLoader().parse(data);
-      group.updateMatrixWorld(true);
-      group.traverse((o) => {
-        if ((o as Mesh).isMesh) {
-          const mesh = o as Mesh;
-          if (mesh.geometry.getAttribute("position"))
-            geometries.push(
-              mesh.geometry.clone().applyMatrix4(mesh.matrixWorld),
-            );
-          if (mesh.geometry.getAttribute("position"))
-            meshNames.push(mesh.name || `Mesh ${meshNames.length + 1}`);
-          if (mesh.geometry.getAttribute("position"))
-            meshMaterials.push(mesh.material);
-        }
+      addScene(group);
+    } else if (ext === "obj") {
+      const { OBJLoader } = await import("three/examples/jsm/loaders/OBJLoader.js");
+      addScene(new OBJLoader().parse(new TextDecoder().decode(data)));
+    } else if (ext === "ply") {
+      const { PLYLoader } = await import("three/examples/jsm/loaders/PLYLoader.js");
+      const geometry = new PLYLoader().parse(data);
+      if (!geometry.getAttribute("normal")) geometry.computeVertexNormals();
+      geometries = [geometry];
+      meshNames.push(file.name.replace(/\.[^.]+$/, ""));
+      meshMaterials.push(null);
+    } else {
+      const [{ GLTFLoader }, { MeshoptDecoder }] = await Promise.all([
+        import("three/examples/jsm/loaders/GLTFLoader.js"),
+        import("three/examples/jsm/libs/meshopt_decoder.module.js"),
+      ]);
+      const manager = new LoadingManager();
+      const resources = new Map(companionFiles.map((resource) => [resource.name, resource]));
+      manager.setURLModifier((url) => {
+        const clean = decodeURIComponent(url.split(/[?#]/)[0] ?? url);
+        const resource = resources.get(clean) ?? resources.get(clean.split("/").pop() ?? "");
+        if (!resource) return url;
+        const objectUrl = URL.createObjectURL(resource);
+        objectUrls.push(objectUrl);
+        return objectUrl;
       });
+      const loader = new GLTFLoader(manager).setMeshoptDecoder(MeshoptDecoder);
+      const source = ext === "gltf" ? new TextDecoder().decode(data) : data;
+      const gltf = await loader.parseAsync(source, "");
+      if (signal?.aborted) throw new DOMException("Loading cancelled.", "AbortError");
+      // glTF's linear unit is metres; PrintScope's analysis and printer data use mm.
+      addScene(gltf.scene, 1000);
     }
   } catch (error) {
     geometries.forEach((geometry) => geometry.dispose());
     disposeMaterials(meshMaterials);
+    if (error instanceof DOMException && error.name === "AbortError") throw error;
     throw new Error(
       `Could not read ${ext.toUpperCase()} model: ${error instanceof Error ? error.message : "invalid data"}`,
     );
+  } finally {
+    objectUrls.forEach((url) => URL.revokeObjectURL(url));
   }
   if (!geometries.length) throw new Error("No usable mesh geometry was found.");
   let analysis;

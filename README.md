@@ -1,10 +1,10 @@
 # PrintScope – 3D Model Viewer & Print Cost Estimator
 
-PrintScope is a private, frontend-only workspace for inspecting STL/3MF models, checking printer fit, estimating production costs, and downloading PDF quotations. The deployed base URL is `https://hsc-logic.github.io/printscope-3d-viewer/`.
+PrintScope is a private, frontend-only workspace for inspecting STL, 3MF, OBJ, GLB, glTF, and PLY models, checking printer fit, estimating production costs, and downloading PDF quotations. The deployed base URL is `https://hsc-logic.github.io/printscope-3d-viewer/`.
 
 ## Features
 
-- Local STL (ASCII/binary) and 3MF parsing, drag-and-drop, validation, disposal, and a 100 MB limit
+- Local STL, 3MF, OBJ, GLB, glTF, and PLY parsing, multi-file glTF resource selection, drag-and-drop, validation, disposal, and a 100 MB per-selection limit
 - Orbit/pan/zoom viewer, perspective/orthographic cameras, seven camera presets, grid, axes, build volume, render modes, viewer fullscreen, and PNG capture
 - Normalized source coordinates plus transform-aware dimensions, area, volume, world bounds, topology diagnostics, and directional build-volume violations
 - Built-in and browser-local duplicate/edit/delete printer and material profiles
@@ -18,7 +18,7 @@ Uploaded geometry, customer details, settings, screenshots, and quotations stay 
 
 ## Supported formats
 
-STL (ASCII and binary) and 3MF model data supported by Three.js. Complex 3MF extensions, encrypted packages, G-code, model repair, supports, and toolpaths are outside this phase.
+STL (ASCII and binary), 3MF, OBJ, GLB, glTF 2.0, and PLY (ASCII/binary) are supported. For a glTF document with external buffers or textures, select or drop the `.gltf` together with its referenced companion files. GLB packages those resources into one file. Complex 3MF extensions, encrypted packages, Draco-compressed glTF, OBJ MTL sidecars, G-code, model repair, supports, and toolpaths are outside this phase.
 
 ## Technology and dependencies
 
@@ -47,7 +47,7 @@ Quick material estimation uses mesh volume × density × infill × an explicitly
 
 ## Geometry analysis
 
-Source geometry is immutable. The pipeline applies the source/3MF world matrix, a separate XY-centering/minimum-Z normalization, user scale, user Euler rotation, and user translation. Displayed analysis is calculated in world space, so rotated and non-uniformly scaled bounds and surface area remain current. Area uses half the triangle edge-cross-product magnitude. Enclosed volume sums each oriented triangle's signed tetrahedron volume `a · (b × c) / 6`, takes the magnitude, and converts mm³ to cm³. Undirected edge incidence detects boundary and non-manifold edges. Large source and transformed analyses run in a cancellable Web Worker using transferable typed arrays.
+Source geometry is immutable. The pipeline applies imported scene-node world matrices, converts glTF/GLB metres to millimetres, applies a separate XY-centering/minimum-Z normalization, then user scale, user Euler rotation, and user translation. Displayed analysis is calculated in world space, so rotated and non-uniformly scaled bounds and surface area remain current. Area uses half the triangle edge-cross-product magnitude. Enclosed volume sums each oriented triangle's signed tetrahedron volume `a · (b × c) / 6`, takes the magnitude, and converts mm³ to cm³. Undirected edge incidence detects boundary and non-manifold edges. Large source and transformed analyses run in a cancellable Web Worker using transferable typed arrays.
 
 ## Project structure
 
@@ -55,7 +55,7 @@ Source geometry is immutable. The pipeline applies the source/3MF world matrix, 
 
 ## Browser limitations, known limitations, and roadmap
 
-Large meshes remain constrained by device memory/GPU limits; copying attributes for worker transfer can briefly increase memory use. STL units are interpreted as millimetres because STL has no standard unit metadata. Volume cannot be guaranteed for open, non-manifold, self-intersecting, or inconsistently oriented meshes. Three.js supports core 3MF geometry and selected material extensions, but slicer-specific project metadata and unsupported extensions are not reproduced. Browser storage can be unavailable, private, full, or cleared by the browser. Future work can add mesh repair diagnostics and an opt-in slicer integration without changing the pricing boundary.
+Large meshes remain constrained by device memory/GPU limits; copying attributes for worker transfer can briefly increase memory use. STL, OBJ, and PLY are interpreted as millimetres because they do not provide a dependable standard unit; glTF/GLB metres are converted to millimetres, while 3MF unit metadata is handled by its loader. Volume cannot be guaranteed for open, non-manifold, self-intersecting, or inconsistently oriented meshes. Three.js supports core 3MF and glTF material features, but slicer-specific project metadata and unsupported extensions are not reproduced. Browser storage can be unavailable, private, full, or cleared by the browser. Future work can add mesh repair diagnostics and an opt-in slicer integration without changing the pricing boundary.
 
 ## License and acknowledgements
 

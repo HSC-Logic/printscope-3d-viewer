@@ -12,7 +12,12 @@ const loadedModel = { name: "a-very-long-model-file-name-for-layout-testing.stl"
 
 vi.mock("./components/viewer/ModelViewer", () => ({ ModelViewer: () => <div data-testid="viewer" /> }));
 vi.mock("./utils/pdfQuotation", () => ({ downloadQuotation: vi.fn() }));
-vi.mock("./loaders/loadModel", () => ({ loadModel: vi.fn(async () => loadedModel), disposeModel: vi.fn() }));
+vi.mock("./loaders/loadModel", () => ({
+  MODEL_ACCEPT: ".stl,.3mf,.obj,.glb,.gltf,.ply,.bin,.png,.jpg,.jpeg,.webp",
+  MODEL_EXTENSIONS: ["stl", "3mf", "obj", "glb", "gltf", "ply"],
+  loadModel: vi.fn(async () => loadedModel),
+  disposeModel: vi.fn(),
+}));
 vi.mock("./geometry/analyzeOffMain", () => ({ analyzeOffMain: vi.fn(async () => analysis) }));
 
 describe("PrintScope responsive user flows", () => {
@@ -38,7 +43,7 @@ describe("PrintScope responsive user flows", () => {
   it("shows the model viewer and toolbar after loading", async () => {
     localStorage.setItem("printscope.help.seen", "1");
     render(<App />);
-    const input = document.querySelector<HTMLInputElement>('input[type="file"][accept=".stl,.3mf"]')!;
+    const input = document.querySelector<HTMLInputElement>('input[type="file"][multiple]')!;
     fireEvent.change(input, { target: { files: [new File(["solid"], "sample.stl")] } });
     await waitFor(() => expect(screen.getByTestId("viewer-toolbar")).toBeInTheDocument());
     expect(screen.getByTestId("viewer")).toBeInTheDocument();
