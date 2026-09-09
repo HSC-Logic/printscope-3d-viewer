@@ -22,7 +22,7 @@ STL (ASCII and binary) and 3MF model data supported by Three.js. Complex 3MF ext
 
 ## Technology and dependencies
 
-React 19, strict TypeScript, Vite, Three.js, React Three Fiber, Drei, Tailwind CSS, Lucide React, jsPDF, jsPDF-AutoTable, Vitest, Testing Library, ESLint, and Prettier. Drei provides camera/control helpers; Lucide provides SVG icons; jsPDF libraries enable offline quotation generation; Prettier is development-only. The development-only `fflate` dependency constructs an actual ZIP-based 3MF test package in memory. No runtime package intentionally communicates with a remote service.
+React 19, strict TypeScript, Vite, Three.js, React Three Fiber, Drei, Tailwind CSS, Lucide React, jsPDF, jsPDF-AutoTable, Vitest, Testing Library, Playwright, ESLint, and Prettier. Drei provides camera/control helpers; Lucide provides SVG icons; jsPDF libraries enable offline quotation generation; Playwright verifies production responsive layouts and theme states. The development-only `fflate` dependency constructs an actual ZIP-based 3MF test package in memory. No runtime package intentionally communicates with a remote service.
 
 ## Development and deployment
 
@@ -34,6 +34,7 @@ npm run dev
 npm run lint
 npm test
 npm run build
+npm run test:e2e
 ```
 
 The Vite base is `/printscope-3d-viewer/`. The Pages workflow runs lint, tests, and build before deploying `dist` on pushes to `main` or manual dispatch. Enable GitHub Pages with **GitHub Actions** as the source.
@@ -50,11 +51,11 @@ Source geometry is immutable. The pipeline applies the source/3MF world matrix, 
 
 ## Project structure
 
-`components/viewer` contains rendering; `loaders` owns parsing/disposal; `geometry` holds pure analysis and fit checks; `pricing` holds pure costs/estimates; `profiles` contains defaults; `storage` owns browser state; `utils` contains lazy PDF export; colocated tests cover domain behavior.
+`components/viewer` contains rendering and responsive camera controls; `components/upload`, `components/profiles`, and `components/common` hold focused UI and accessible dialogs; `loaders` owns parsing/disposal; `geometry` holds pure analysis and fit checks; `pricing` holds pure costs/estimates; `profiles` contains defaults; `storage` owns browser state; `utils` contains lazy PDF export. Colocated unit tests cover behavior and `e2e` contains production-build responsive assertions.
 
 ## Browser limitations, known limitations, and roadmap
 
-Large meshes remain constrained by device memory/GPU limits; copying attributes for worker transfer can briefly increase memory use. STL units are interpreted as millimetres because STL has no standard unit metadata. Volume cannot be guaranteed for open, non-manifold, self-intersecting, or inconsistently oriented meshes. Three.js supports core 3MF geometry and selected material extensions, but slicer-specific project metadata and unsupported extensions are not reproduced. Browser storage can be unavailable, private, full, or cleared by the browser. Custom-profile editing currently uses native browser prompts. Future work can add mesh repair diagnostics and an opt-in slicer integration without changing the pricing boundary.
+Large meshes remain constrained by device memory/GPU limits; copying attributes for worker transfer can briefly increase memory use. STL units are interpreted as millimetres because STL has no standard unit metadata. Volume cannot be guaranteed for open, non-manifold, self-intersecting, or inconsistently oriented meshes. Three.js supports core 3MF geometry and selected material extensions, but slicer-specific project metadata and unsupported extensions are not reproduced. Browser storage can be unavailable, private, full, or cleared by the browser. Future work can add mesh repair diagnostics and an opt-in slicer integration without changing the pricing boundary.
 
 ## License and acknowledgements
 

@@ -9,7 +9,6 @@ import {
 } from "react";
 import {
   Box,
-  Camera,
   ChevronLeft,
   ChevronRight,
   Download,
@@ -17,7 +16,6 @@ import {
   Focus,
   HelpCircle,
   Image,
-  Maximize,
   Menu,
   Moon,
   RotateCcw,
@@ -34,6 +32,11 @@ import { quickEstimate } from "./pricing/estimateMaterial";
 import { checkPrinterFit } from "./geometry/printerFit";
 import { calculateScaleToFit } from "./geometry/scaleToFit";
 import { ViewerErrorBoundary } from "./components/common/ViewerErrorBoundary";
+import { Dialog } from "./components/common/Dialog";
+import { OverflowMenu } from "./components/common/OverflowMenu";
+import { EmptyUploadState } from "./components/upload/EmptyUploadState";
+import { ViewerToolbar, type CameraPreset } from "./components/viewer/ViewerToolbar";
+import { ConfirmDialog, ProfileDialog, type EditorState } from "./components/profiles/ProfileDialogs";
 import { modelMatrix } from "./geometry/analyzeGeometry";
 import { analyzeOffMain } from "./geometry/analyzeOffMain";
 import {
@@ -164,10 +167,17 @@ function App() {
     loadGeneration = useRef(0),
     loadAbort = useRef<AbortController | null>(null),
     helpButtonRef = useRef<HTMLButtonElement>(null),
-    helpDialogRef = useRef<HTMLDivElement>(null),
-    previousHelp = useRef(help);
+    previousHelp = useRef(help),
+    leftDrawerRef = useRef<HTMLElement>(null),
+    rightDrawerRef = useRef<HTMLElement>(null),
+    leftOpenerRef = useRef<HTMLButtonElement>(null),
+    rightOpenerRef = useRef<HTMLButtonElement>(null);
   const [isFullscreen, setIsFullscreen] = useState(false);
-  const [activePreset, setActivePreset] = useState("isometric");
+  const [activePreset, setActivePreset] = useState<CameraPreset>("isometric");
+  const [activeTab, setActiveTab] = useState<"model" | "estimate" | "pricing" | "quotation">("model");
+  const [compactLayout, setCompactLayout] = useState(false);
+  const [profileEditor, setProfileEditor] = useState<EditorState | null>(null);
+  const [deleteProfile, setDeleteProfile] = useState<"printer" | "material" | null>(null);
   const [advancedScale, setAdvancedScale] = useState(false);
   const [unreliableAcknowledged, setUnreliableAcknowledged] = useState(false);
   const [useModelColors, setUseModelColors] = useState(true);
@@ -182,36 +192,49 @@ function App() {
     return () => document.removeEventListener("fullscreenchange", onChange);
   }, []);
   useEffect(() => {
+    const media = matchMedia("(max-width: 1179px)");
+    const update = () => setCompactLayout(media.matches);
+    update();
+    media.addEventListener("change", update);
+    return () => media.removeEventListener("change", update);
+  }, []);
+  useEffect(() => {
+    if (!compactLayout) return;
+    const open = leftOpen ? leftDrawerRef.current : rightOpen ? rightDrawerRef.current : null;
+    if (open) {
+      open.querySelector<HTMLElement>("button")?.focus();
+      document.body.classList.add("drawer-open");
+    } else {
+      document.body.classList.remove("drawer-open");
+    }
+    return () => document.body.classList.remove("drawer-open");
+  }, [compactLayout, leftOpen, rightOpen]);
+  useEffect(() => {
     if (previousHelp.current && !help) helpButtonRef.current?.focus();
     previousHelp.current = help;
   }, [help]);
-  function trapDialogFocus(event: React.KeyboardEvent) {
-    if (event.key !== "Tab") return;
-    const items = helpDialogRef.current?.querySelectorAll<HTMLElement>(
-      'button,[href],input,select,textarea,[tabindex]:not([tabindex="-1"])',
-    );
-    if (!items?.length) return;
-    const first = items[0]!,
-      last = items[items.length - 1]!;
-    if (event.shiftKey && document.activeElement === first) {
-      event.preventDefault();
-      last.focus();
-    } else if (!event.shiftKey && document.activeElement === last) {
-      event.preventDefault();
-      first.focus();
-    }
-  }
   useEffect(() => {
     const close = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
         setHelp(false);
+        if (leftOpen) leftOpenerRef.current?.focus();
+        if (rightOpen) rightOpenerRef.current?.focus();
         setLeftOpen(false);
         setRightOpen(false);
+      }
+      if (event.key === "Tab" && compactLayout && (leftOpen || rightOpen)) {
+        const drawer = leftOpen ? leftDrawerRef.current : rightDrawerRef.current;
+        const items = drawer?.querySelectorAll<HTMLElement>('button:not(:disabled),input:not(:disabled),select:not(:disabled),textarea:not(:disabled),[tabindex]:not([tabindex="-1"])');
+        if (!items?.length) return;
+        const first = items[0]!;
+        const last = items[items.length - 1]!;
+        if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
+        else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
       }
     };
     document.addEventListener("keydown", close);
     return () => document.removeEventListener("keydown", close);
-  }, []);
+  }, [compactLayout, leftOpen, rightOpen]);
   const printer =
     settings.printers.find((p) => p.id === printerId) ?? settings.printers[0]!;
   const material =
@@ -382,46 +405,7 @@ function App() {
     });
   }
   function editPrinterProfile(duplicate = false) {
-    const current = printer;
-    const name = window.prompt(
-      "Printer name",
-      duplicate ? `${current.name} copy` : current.name,
-    );
-    if (!name?.trim()) return;
-    const ask = (label: string, value: number) =>
-      Number(window.prompt(label, String(value)));
-    const next = {
-      ...current,
-      id: duplicate ? `printer-${crypto.randomUUID()}` : current.id,
-      name: name.trim(),
-      build: {
-        width: ask("Build width (mm)", current.build.width),
-        depth: ask("Build depth (mm)", current.build.depth),
-        height: ask("Build height (mm)", current.build.height),
-      },
-      powerW: ask("Rated power (W)", current.powerW),
-      purchasePrice: ask("Purchase price", current.purchasePrice),
-      custom: duplicate || current.custom,
-    };
-    if (
-      ![
-        next.build.width,
-        next.build.depth,
-        next.build.height,
-        next.powerW,
-        next.purchasePrice,
-      ].every((v) => Number.isFinite(v) && v > 0)
-    ) {
-      setError("Printer values must be finite and greater than zero.");
-      return;
-    }
-    setSettings((s) => ({
-      ...s,
-      printers: duplicate
-        ? [...s.printers, next]
-        : s.printers.map((p) => (p.id === next.id ? next : p)),
-    }));
-    if (duplicate) setPrinterId(next.id);
+    setProfileEditor({ kind: "printer", duplicate, value: { ...printer, build: { ...printer.build }, id: duplicate ? `printer-${crypto.randomUUID()}` : printer.id, name: duplicate ? `${printer.name} copy` : printer.name, custom: duplicate || printer.custom } });
   }
   function deletePrinterProfile() {
     if (!printer.custom) {
@@ -436,47 +420,17 @@ function App() {
     setPrinterId(remaining[0]!.id);
   }
   function editMaterialProfile(duplicate = false) {
-    const current = material;
-    const name = window.prompt(
-      "Material name",
-      duplicate ? `${current.name} copy` : current.name,
-    );
-    if (!name?.trim()) return;
-    const density = Number(
-        window.prompt("Density (g/cm³)", String(current.density)),
-      ),
-      costPerKg = Number(
-        window.prompt("Cost per kg", String(current.costPerKg)),
-      ),
-      color = window.prompt("Colour (#RRGGBB)", current.color) ?? current.color,
-      notes = window.prompt("Notes", current.notes) ?? current.notes;
-    const next = {
-      ...current,
-      id: duplicate ? `material-${crypto.randomUUID()}` : current.id,
-      name: name.trim(),
-      density,
-      costPerKg,
-      color,
-      notes,
-      custom: duplicate || current.custom,
-    };
-    if (
-      !Number.isFinite(density) ||
-      density <= 0 ||
-      !Number.isFinite(costPerKg) ||
-      costPerKg < 0 ||
-      !/^#[0-9a-f]{6}$/i.test(color)
-    ) {
-      setError("Material density, price, or colour is invalid.");
-      return;
+    setProfileEditor({ kind: "material", duplicate, value: { ...material, id: duplicate ? `material-${crypto.randomUUID()}` : material.id, name: duplicate ? `${material.name} copy` : material.name, custom: duplicate || material.custom } });
+  }
+  function saveProfile(next: EditorState) {
+    if (next.kind === "printer") {
+      setSettings((current) => ({ ...current, printers: next.duplicate ? [...current.printers, next.value] : current.printers.map((item) => item.id === next.value.id ? next.value : item) }));
+      if (next.duplicate) setPrinterId(next.value.id);
+    } else {
+      setSettings((current) => ({ ...current, materials: next.duplicate ? [...current.materials, next.value] : current.materials.map((item) => item.id === next.value.id ? next.value : item) }));
+      if (next.duplicate) setMaterialId(next.value.id);
     }
-    setSettings((s) => ({
-      ...s,
-      materials: duplicate
-        ? [...s.materials, next]
-        : s.materials.map((m) => (m.id === next.id ? next : m)),
-    }));
-    if (duplicate) setMaterialId(next.id);
+    setProfileEditor(null);
   }
   function deleteMaterialProfile() {
     if (!material.custom) {
@@ -501,6 +455,7 @@ function App() {
     <div className="app">
       <header>
         <button
+          ref={leftOpenerRef}
           className="mobile"
           aria-label="Open model settings"
           onClick={() => {
@@ -514,7 +469,7 @@ function App() {
           <Box /> <span>PrintScope</span>
           <small>3D Viewer & Cost Estimator</small>
         </div>
-        <div className="toolbar">
+        <div className="toolbar header-toolbar">
           <input
             ref={fileInput}
             className="sr-only"
@@ -532,6 +487,7 @@ function App() {
           >
             <FileUp /> {model ? "Replace" : "Upload"} Model
           </button>
+          <div className="header-secondary">
           <button
             aria-label="Reset camera view"
             title="Reset view"
@@ -546,17 +502,6 @@ function App() {
             onClick={() => void downloadImage()}
           >
             <Image />
-          </button>
-          <button
-            aria-label={
-              isFullscreen
-                ? "Exit viewer fullscreen"
-                : "Enter viewer fullscreen"
-            }
-            title={isFullscreen ? "Exit full screen" : "Full screen"}
-            onClick={toggleFullscreen}
-          >
-            <Maximize />
           </button>
           <button
             aria-label={`Switch to ${settings.theme === "dark" ? "light" : "dark"} theme`}
@@ -578,8 +523,17 @@ function App() {
           >
             <HelpCircle />
           </button>
+          </div>
+          <OverflowMenu>
+            <button role="menuitem" disabled={!model} onClick={() => viewer.current?.reset()}><Focus /> Reset camera</button>
+            <button role="menuitem" disabled={!model} onClick={() => void downloadImage()}><Image /> Screenshot</button>
+            <button role="menuitem" onClick={toggleFullscreen}><Focus /> {isFullscreen ? "Exit fullscreen" : "Fullscreen"}</button>
+            <button role="menuitem" onClick={() => updateSetting("theme", settings.theme === "dark" ? "light" : "dark")}>{settings.theme === "dark" ? <Sun /> : <Moon />} Theme</button>
+            <button role="menuitem" onClick={() => setHelp(true)}><HelpCircle /> Help</button>
+          </OverflowMenu>
         </div>
         <button
+          ref={rightOpenerRef}
           className="mobile"
           aria-label="Open estimate and quotation"
           onClick={() => {
@@ -596,16 +550,18 @@ function App() {
             className="drawer-backdrop mobile"
             aria-label="Close navigation drawer"
             onClick={() => {
+              if (leftOpen) leftOpenerRef.current?.focus();
+              if (rightOpen) rightOpenerRef.current?.focus();
               setLeftOpen(false);
               setRightOpen(false);
             }}
           />
         )}
-        <aside className={`left ${leftOpen ? "open" : ""}`}>
+        <aside ref={leftDrawerRef} className={`left ${leftOpen ? "open" : ""}`} role={compactLayout ? "dialog" : undefined} aria-modal={compactLayout && leftOpen ? "true" : undefined} aria-label="Model settings" aria-hidden={compactLayout && !leftOpen ? "true" : undefined} inert={compactLayout && !leftOpen}>
           <button
             className="drawer-close mobile"
             aria-label="Close model settings drawer"
-            onClick={() => setLeftOpen(false)}
+            onClick={() => { setLeftOpen(false); leftOpenerRef.current?.focus(); }}
           >
             <X />
           </button>
@@ -629,7 +585,7 @@ function App() {
               </button>
             </div>
           ) : (
-            <p className="muted">No model loaded.</p>
+            <p className="muted">Upload a model to inspect and transform it.</p>
           )}
           <h2>Printer</h2>
           <label className="field">
@@ -652,7 +608,7 @@ function App() {
             </button>
             <button
               disabled={!printer.custom || settings.printers.length === 1}
-              onClick={deletePrinterProfile}
+              onClick={() => setDeleteProfile("printer")}
             >
               Delete custom
             </button>
@@ -682,7 +638,7 @@ function App() {
             </button>
             <button
               disabled={!material.custom || settings.materials.length === 1}
-              onClick={deleteMaterialProfile}
+              onClick={() => setDeleteProfile("material")}
             >
               Delete custom
             </button>
@@ -730,7 +686,7 @@ function App() {
           {model?.hasModelColors && (
             <label className="toggle">
               <span>Use model colours</span>
-              <input
+              <input disabled={!model}
                 type="checkbox"
                 checked={useModelColors}
                 onChange={(e) => setUseModelColors(e.target.checked)}
@@ -741,6 +697,7 @@ function App() {
           <label className="field">
             <span>Render mode</span>
             <select
+              disabled={!model}
               value={mode}
               onChange={(e) => setMode(e.target.value as typeof mode)}
             >
@@ -753,6 +710,7 @@ function App() {
             <label className="toggle" key={String(l)}>
               <span>{l}</span>
               <input
+                disabled={!model}
                 type="checkbox"
                 checked={Boolean(v)}
                 onChange={(e) => set(e.target.checked)}
@@ -794,15 +752,7 @@ function App() {
               />
             </ViewerErrorBoundary>
           ) : (
-            <button
-              className="empty"
-              onClick={() => fileInput.current?.click()}
-            >
-              <FileUp />
-              <b>Drop your STL or 3MF here</b>
-              <span>or choose a file · maximum 100 MB</span>
-              <small>Your model never leaves this browser.</small>
-            </button>
+            <EmptyUploadState onSelect={() => fileInput.current?.click()} />
           )}
           {drag && <div className="drop">Release to inspect model</div>}
           {(loading || analyzing) && (
@@ -818,61 +768,31 @@ function App() {
               </button>
             </div>
           )}
-          <div className="viewbar">
-            {(
-              [
-                "isometric",
-                "front",
-                "back",
-                "left",
-                "right",
-                "top",
-                "bottom",
-              ] as const
-            ).map((preset) => (
-              <button
-                key={preset}
-                aria-label={`${preset} camera view`}
-                aria-pressed={activePreset === preset}
-                onClick={() => {
-                  setActivePreset(preset);
-                  viewer.current?.view(preset);
-                }}
-              >
-                {preset.charAt(0).toUpperCase() + preset.slice(1)}
-              </button>
-            ))}
-            <button
-              disabled={!model}
-              onClick={() => {
-                setActivePreset("isometric");
-                viewer.current?.view("isometric");
-              }}
-            >
-              Fit to model
-            </button>
-            <button onClick={() => viewer.current?.reset()}>
-              <Camera /> Reset camera
-            </button>
-            <button onClick={toggleFullscreen}>
-              {isFullscreen ? "Exit fullscreen" : "Fullscreen"}
-            </button>
-            <button disabled={!model} onClick={scaleToFit}>
-              <Focus /> Scale to fit printer
-            </button>
-          </div>
+          {model && <ViewerToolbar active={activePreset} fullscreen={isFullscreen} onView={(preset) => { setActivePreset(preset); viewer.current?.view(preset); }} onFit={() => viewer.current?.view("isometric")} onReset={() => viewer.current?.reset()} onFullscreen={toggleFullscreen} />}
         </section>
-        <aside className={`right ${rightOpen ? "open" : ""}`}>
+        <aside ref={rightDrawerRef} className={`right ${rightOpen ? "open" : ""}`} role={compactLayout ? "dialog" : undefined} aria-modal={compactLayout && rightOpen ? "true" : undefined} aria-label="Estimate and quotation" aria-hidden={compactLayout && !rightOpen ? "true" : undefined} inert={compactLayout && !rightOpen}>
           <button
             className="drawer-close mobile"
             aria-label="Close estimate and quotation drawer"
-            onClick={() => setRightOpen(false)}
+            onClick={() => { setRightOpen(false); rightOpenerRef.current?.focus(); }}
           >
             <ChevronRight />
           </button>
-          <section>
+          <div className="panel-tabs" role="tablist" aria-label="Estimate panel" onKeyDown={(event) => {
+            if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
+            event.preventDefault();
+            const tabs = ["model", "estimate", "pricing", "quotation"] as const;
+            const index = tabs.indexOf(activeTab);
+            const next = event.key === "Home" ? 0 : event.key === "End" ? tabs.length - 1 : (index + (event.key === "ArrowRight" ? 1 : -1) + tabs.length) % tabs.length;
+            setActiveTab(tabs[next]!);
+            event.currentTarget.querySelectorAll<HTMLButtonElement>('[role="tab"]')[next]?.focus();
+          }}>
+            {(["model", "estimate", "pricing", "quotation"] as const).map((tab) => <button key={tab} role="tab" tabIndex={activeTab === tab ? 0 : -1} aria-selected={activeTab === tab} onClick={() => setActiveTab(tab)}>{tab.charAt(0).toUpperCase() + tab.slice(1)}</button>)}
+          </div>
+          {model && <p className={fit.fits ? "success fit-banner" : "warning fit-banner"}>{fit.fits ? "Fits selected printer." : `Does not fit: ${fit.violations.map((v) => `${v.side} by ${v.amountMm.toFixed(2)} mm`).join(", ")}.`}</p>}
+          <section hidden={activeTab !== "model"}>
             <h2>Model information</h2>
-            <div className="stats">
+            {model ? <div className="stats">
               <span>
                 Dimensions
                 <b>
@@ -900,7 +820,7 @@ function App() {
                     : "—"}
                 </b>
               </span>
-            </div>
+            </div> : <p className="muted">Upload a model to view dimensions, topology, and printer fit.</p>}
             {model && !transformedAnalysis?.diagnostics.volumeReliable && (
               <p className="warning">
                 Volume may be inaccurate.{" "}
@@ -918,8 +838,9 @@ function App() {
               </p>
             )}
           </section>
-          <section>
+          <section hidden={activeTab !== "model"}>
             <h2>Transform</h2>
+            <fieldset className="control-fieldset" disabled={!model}>
             <div className="grid3">
               {(["X", "Y", "Z"] as const).map((a, i) => (
                 <NumberField
@@ -957,16 +878,7 @@ function App() {
               <input
                 type="checkbox"
                 checked={advancedScale}
-                onChange={(e) => {
-                  if (
-                    e.target.checked &&
-                    !window.confirm(
-                      "Non-uniform scaling changes the model's proportions. Continue?",
-                    )
-                  )
-                    return;
-                  setAdvancedScale(e.target.checked);
-                }}
+                onChange={(e) => setAdvancedScale(e.target.checked)}
               />
             </label>
             {advancedScale && (
@@ -1037,11 +949,13 @@ function App() {
                 Place on build plate
               </button>
             </div>
+            <button disabled={!model} onClick={scaleToFit}><Focus /> Scale to fit printer</button>
             <button onClick={() => setTransform(initialTransform)}>
               <RotateCcw /> Reset transform
             </button>
+            </fieldset>
           </section>
-          <section>
+          <section hidden={activeTab !== "estimate"}>
             <h2>Print estimate</h2>
             <div className="segmented">
               <button
@@ -1138,7 +1052,7 @@ function App() {
               </>
             )}
           </section>
-          <section>
+          <section hidden={activeTab !== "pricing"}>
             <h2>Pricing</h2>
             <div className="grid2">
               <NumberField
@@ -1250,7 +1164,7 @@ function App() {
               </strong>
             </div>
           </section>
-          <section>
+          <section hidden={activeTab !== "quotation"}>
             <h2>Quotation</h2>
             <label className="field">
               <span>Customer</span>
@@ -1356,7 +1270,7 @@ function App() {
               <Download /> Download PDF quotation
             </button>
           </section>
-          <section>
+          <section hidden={activeTab !== "quotation"}>
             <h2>Settings</h2>
             <div className="row">
               <button
@@ -1426,32 +1340,7 @@ function App() {
         </aside>
       </main>
       {help && (
-        <div className="modal-backdrop" role="presentation">
-          <div
-            ref={helpDialogRef}
-            className="modal"
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="help-title"
-            aria-describedby="help-description"
-            onKeyDown={trapDialogFocus}
-          >
-            <button
-              className="modal-x"
-              autoFocus
-              aria-label="Close help"
-              onClick={() => {
-                setHelp(false);
-                localStorage.setItem("printscope.help.seen", "1");
-              }}
-            >
-              <X />
-            </button>
-            <h1 id="help-title">Welcome to PrintScope</h1>
-            <p id="help-description">
-              Upload or drop an STL or 3MF file. Drag to rotate, scroll or pinch
-              to zoom, and right-drag to pan.
-            </p>
+        <Dialog title="Welcome to PrintScope" description="Upload or drop an STL or 3MF file. Drag to rotate, scroll or pinch to zoom, and right-drag to pan." onClose={() => { setHelp(false); localStorage.setItem("printscope.help.seen", "1"); }} returnFocus={helpButtonRef}>
             <p>
               PrintScope analyses geometry and previews build-volume fit; it
               does not slice models or generate G-code. For quotations, manual
@@ -1471,9 +1360,10 @@ function App() {
             >
               Start exploring
             </button>
-          </div>
-        </div>
+        </Dialog>
       )}
+      {profileEditor && <ProfileDialog state={profileEditor} onClose={() => setProfileEditor(null)} onSave={saveProfile} />}
+      {deleteProfile && <ConfirmDialog name={deleteProfile === "printer" ? printer.name : material.name} onClose={() => setDeleteProfile(null)} onConfirm={() => { if (deleteProfile === "printer") deletePrinterProfile(); else deleteMaterialProfile(); setDeleteProfile(null); }} />}
     </div>
   );
 }
