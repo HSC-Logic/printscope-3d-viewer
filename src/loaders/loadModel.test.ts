@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { loadModel } from "./loadModel";
 import { zipSync, strToU8, unzipSync } from "fflate";
 function modelFile(name: string, contents: string | Uint8Array): File {
@@ -109,7 +109,26 @@ end_header
       view.setUint32(binStart, binary.length, true); view.setUint32(binStart + 4, 0x004e4942, true); glb.set(binary, binStart + 8);
       contents = glb;
     }
-    const model = await loadModel(modelFile(`triangle.${extension}`, contents));
+    // In some Node/jsdom combinations, Three.js receives jsdom's AbortSignal
+    // while Node's Request validates against its own AbortSignal realm.
+    const NativeRequest = globalThis.Request;
+    if (extension === "gltf") {
+      vi.stubGlobal(
+        "Request",
+        class RequestWithoutCrossRealmSignal extends NativeRequest {
+          constructor(input: RequestInfo | URL, init?: RequestInit) {
+            super(input, { ...init, signal: undefined });
+          }
+        },
+      );
+    }
+    const model = await (async () => {
+      try {
+        return await loadModel(modelFile(`triangle.${extension}`, contents));
+      } finally {
+        vi.unstubAllGlobals();
+      }
+    })();
     expect(model.extension).toBe(extension);
     expect(model.analysis.triangles).toBe(1);
     expect(model.analysis.dimensions.width).toBeCloseTo(10);
